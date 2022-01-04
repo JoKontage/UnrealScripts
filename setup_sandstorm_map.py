@@ -276,6 +276,41 @@ def get_all_actors(use_selection=False, actor_class=None, actor_tag=None, world=
         return [x for x in actors]
 
 
+def hide_all_actors_with_material_name(material_name, actor_folder=None):
+    """ Hide all actors with the specified material (with Undo support) """
+    matching_actors = list()
+
+    with unreal.ScopedEditorTransaction("Hiding Actors (in-game) with Specific Mat") as trans:
+        
+        # Find all actors with the specified material and add them
+        # to the "matching_actors" list.
+        for actor in get_all_actors(actor_class=unreal.StaticMeshActor):
+
+            if actor_contains_material_starting_with(actor, material_name):
+                print(" - hiding actor: %s" % actor.get_name())
+
+                # Hide this specified actor in-game
+                actor.set_actor_hidden_in_game(True)
+
+                # Turn off collision
+                actor.set_actor_enable_collision(False)
+
+                # Add this actor to our "matching_actors" list
+                matching_actors.append(actor)
+
+    return matching_actors
+
+
+def move_actors_to_folder(actors, folder_name):
+    for actor in actors:
+        if not actor:
+            continue
+        try:
+            actor.set_folder_path(folder_name)
+        except Exception as ex:
+            print(ex)
+
+
 def spawn_blueprint_actor(asset_path='', label=None, actor_location=None, actor_rotation=None,
                           local_rotation=None, actor_scale=None, properties={}, hidden=False):
     """
@@ -543,12 +578,13 @@ def actor_contains_named_mesh(actor, mesh_name):
     return False
 
 
-def actor_contains_material_starting_with(actor, words_tuple, all_mats_must_match=True):
+def actor_contains_material_starting_with(actor, material_name):
     """ If this actor is StaticMeshActor and contains a material with
-        a name beginning with any of the words in the provided words_tuple,
+        a name beginning with any of the words in the provided material_name,
         return True -- else return False
     """
-    all_mats_matched = True
+    if not material_name:
+        return False
     if isinstance(actor, unreal.StaticMeshActor):
 
         static_mesh_component = actor.get_component_by_class(unreal.StaticMeshComponent)
@@ -565,44 +601,24 @@ def actor_contains_material_starting_with(actor, words_tuple, all_mats_must_matc
         # Iterate through all materials found in this static mesh
         for mat in mats:
 
-            # Some materials may not be present
-            # in the materials array -- skip if so
             if not mat:
-                all_mats_matched = False
                 continue
 
             # Check if the name of the current material starts with "tools"
             mat_name = mat.get_name()
             if not mat_name:
-                return False
+                continue
 
-            if mat_name.startswith(words_tuple):
+            if mat_name.startswith(material_name):
+                return True
 
-                if not all_mats_must_match:
-                    # We don't require all materials match -- only 1
-                    # Return True because at least 1 material name matched
-                    # our provided words
-                    return True
-
-            else:
-                # This material name didn't start with the words
-                # we provided. If we require all material names
-                # to begin with at least 1 of the words provided,
-                # return False
-                if all_mats_must_match:
-                    return False
-
-        # Return True because all material names matched our provided words
-        return all_mats_matched
-
-    # Actor wasn't a StaticMesh -- so we couldn't be sure
-    # it was a tool. Skip this actor ...
+    # Actor wasn't a StaticMesh or no materials matched
     return False
 
 
-def actor_contains_material_containing(actor, words_tuple, all_mats_must_match=True):
+def actor_contains_material_containing(actor, material_name, all_mats_must_match=True):
     """ If this actor is StaticMeshActor and contains a material with
-        a name beginning with any of the words in the provided words_tuple,
+        a name beginning with any of the words in the provided material_name,
         return True -- else return False
     """
     all_mats_matched = True
@@ -633,7 +649,7 @@ def actor_contains_material_containing(actor, words_tuple, all_mats_must_match=T
             if not mat_name:
                 return False
 
-            if words_tuple in mat_name:
+            if material_name in mat_name:
 
                 if not all_mats_must_match:
                     # We don't require all materials match -- only 1
@@ -2087,7 +2103,7 @@ def fix_all_lighting():
 
     # Attempt to find the actor labeld "_lights_set",
     # and fix *normal* lights (no directional) if this actor doesn't exist yet
-    light_multiplier = 4
+    light_multiplier = 2
     if not unreal.EditorLevelLibrary.get_actor_reference("PersistentLevel._lights_set_"):
 
         # Fix lights! They should all be multiplied by 10 once
@@ -2238,7 +2254,8 @@ def fix_everything(world, map_info, map_data, skybox_bounds=6000):
                 # to the "Misc" sublevel
                 sublevels["Misc"]["actors"].append(actor)
 
-            elif actor_contains_material_starting_with(actor, ("tools", "fogvolume")):
+            elif (actor_contains_material_starting_with(actor, "tools")
+                or actor_contains_material_starting_with(actor, "fogvolume")):
 
                 # Disable collision on this tool object if it's not a clipping/blocking object
                 smc = actor.get_component_by_class(unreal.StaticMeshComponent)
@@ -2376,11 +2393,24 @@ def fix_everything(world, map_info, map_data, skybox_bounds=6000):
     # unreal.EditorLevelLibrary.save_all_dirty_levels()
 
     # Fix lights! They should all be multiplied by ~8 once
-    with unreal.ScopedEditorTransaction("Fix Lights"):
-        fix_all_lighting()
+    #with unreal.ScopedEditorTransaction("Fix Lights"):
+    #    fix_all_lighting()
 
     # Fix collisions!
     fix_collisions()
+
+    # Hide all actors with a material name starting with "player_flesh_mat"
+    # and return a list of all matching actors
+    matching_actors = hide_all_actors_with_material_name("player_flesh_mat")
+
+    # Add all actors in the "actors_to_group" list to an Unreal group
+    with unreal.ScopedEditorTransaction("Group Mannequins"):
+
+        useless_actors_group = unreal.ActorGroupingUtils(name="Mannequins")
+        useless_actors_group.group_actors(matching_actors)
+
+        # Move actors to a folder called "Mannequins"
+        move_actors_to_folder(matching_actors, "Mannequins")
 
     # Fix decals!
     print("[*] Attempting to fix all decals ...")
