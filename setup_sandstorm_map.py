@@ -276,7 +276,7 @@ def get_all_actors(use_selection=False, actor_class=None, actor_tag=None, world=
         return [x for x in actors]
 
 
-def hide_all_actors_with_material_name(material_name, actor_folder=None):
+def hide_all_actors_with_material_name(material_name):
     """ Hide all actors with the specified material (with Undo support) """
     matching_actors = list()
 
@@ -286,7 +286,7 @@ def hide_all_actors_with_material_name(material_name, actor_folder=None):
         # to the "matching_actors" list.
         for actor in get_all_actors(actor_class=unreal.StaticMeshActor):
 
-            if actor_contains_material_starting_with(actor, material_name):
+            if actor_contains_material(actor, material_name):
                 print(" - hiding actor: %s" % actor.get_name())
 
                 # Hide this specified actor in-game
@@ -566,6 +566,8 @@ def actor_contains_named_mesh(actor, mesh_name):
     if isinstance(actor, unreal.StaticMeshActor):
 
         static_mesh_component = actor.get_component_by_class(unreal.StaticMeshComponent)
+        if not static_mesh_component:
+            return False
 
         # Skip if there's no static mesh to display
         if not static_mesh_component.static_mesh:
@@ -581,6 +583,46 @@ def actor_contains_named_mesh(actor, mesh_name):
 def actor_contains_material_starting_with(actor, material_name):
     """ If this actor is StaticMeshActor and contains a material with
         a name beginning with any of the words in the provided material_name,
+        return True -- else return False
+    """
+    if not material_name:
+        return False
+    if isinstance(actor, unreal.StaticMeshActor):
+
+        static_mesh_component = actor.get_component_by_class(unreal.StaticMeshComponent)
+        if not static_mesh_component:
+            return False
+
+        # Skip if there's no static mesh to display
+        if not static_mesh_component.static_mesh:
+            return False
+
+        # Check if the static mesh has materials -- which we'll fix if applicable
+        mats = static_mesh_component.get_materials()
+        if not mats:
+            return False
+
+        # Iterate through all materials found in this static mesh
+        for mat in mats:
+
+            if not mat:
+                continue
+
+            # Check if the name of the current material starts with "tools"
+            mat_name = mat.get_name()
+            if not mat_name:
+                continue
+
+            if mat_name.startswith(material_name):
+                return True
+
+    # Actor wasn't a StaticMesh or no materials matched
+    return False
+
+
+def actor_contains_material(actor, material_name, containing=True):
+    """ If this actor is StaticMeshActor and contains a material with
+        a name beginning with any of the words in the provided words_tuple,
         return True -- else return False
     """
     if not material_name:
@@ -609,10 +651,11 @@ def actor_contains_material_starting_with(actor, material_name):
             if not mat_name:
                 continue
 
-            if mat_name.startswith(material_name):
+            if mat_name.startswith(material_name) or (containing and material_name in mat_name):
                 return True
 
-    # Actor wasn't a StaticMesh or no materials matched
+    # Actor wasn't a StaticMesh -- so we couldn't be sure
+    # it was a tool. Skip this actor ...
     return False
 
 
@@ -1821,12 +1864,16 @@ def ensure_sublevels_exist(sublevel_tags, persistent_level_world=None):
 
             print("-------------------------------")
             print("  MISSING SUBLEVELS CREATED")
-            print("  RE-RUN THE SCRIPT!")
             print("-------------------------------")
             #unreal.EditorDialog().show_message(
             #    title="INFO",
             #    message="Sublevels have been created. Please re-run this script to continue.",
             #    message_type=unreal.AppMsgType.OK)
+            main()
+
+            print("-------------------------------")
+            print("  Quitting script ...")
+            print("-------------------------------")
             exit(0)
 
         else:
@@ -1871,6 +1918,173 @@ def merge_mesh_actors():
     unreal.EditorLevelLibrary.set_selected_level_actors(terrain_meshes)
 
 
+def give_debug_info():
+    world = unreal.EditorLevelLibrary.get_editor_world()
+    world_name = world.get_name()
+    map_info = get_json_values_for_current_map(world)
+    generate_entity_spreadsheets(open_directory=False)
+    get_vmf_data_for_current_map(world_name,
+      debug_output_path=r"%s.vmf.json" % world_name)
+    json.dump(map_info, open("%s.txt.json" % world_name, "w"), indent=4)
+    os.system("explorer %s.txt.json" % world_name)
+
+
+def debug_selected_cover_actor():
+
+    # Get the current world
+    world_context_object = unreal.EditorLevelLibrary.get_editor_world()
+
+    cover_actor = unreal.EditorLevelLibrary.get_selected_level_actors()[0]
+    if isinstance(cover_actor, unreal.Note):
+
+        convert_note_to_nbot_cover({"actor": cover_actor, "note": get_note_actor_details(cover_actor)},
+                                   fire_from_feet=False)
+
+    else:
+
+        # Make sure our new AICoverActor isn't overlapping with any objects
+        # by moving it out of the way of objects it overlaps with!
+        for dir in ["forward", "right", "left", "diags"]:
+            raycast_reposition_on_hit(cover_actor, world_context_object, direction=dir)
+
+        # Reposition to the ground, changing our stance if the ground
+        # is *very* close to the position we were spawned in
+        stance = unreal.SoldierStance.STAND
+        hit_something_below, distance = raycast_reposition_on_hit(cover_actor, world_context_object, "down")
+        if hit_something_below:
+            if distance < 220:
+                stance = unreal.SoldierStance.CROUCH
+            elif distance < 160:
+                stance = unreal.SoldierStance.PRONE
+
+        # If our AICoverActor is overlapping with something above it, make it crouch!
+        hit_something_above, distance = raycast_reposition_on_hit(cover_actor, world_context_object, "up")
+        if hit_something_above:
+            print("dist to hit above: %d" % distance)
+            if distance < 270:
+                stance = unreal.SoldierStance.CROUCH
+            elif distance < 180:
+                stance = unreal.SoldierStance.PRONE
+
+        # new_actor is an AICoverActor, which has
+        # a "Cover" component. The "Cover" component
+        # can define the stance, protection angle, launcher priority (good rocket launcher position?),
+        # scope priority (is this a good sniper position?), machine gunner priority,
+        # "ambush node" (good ambush position?), and "rank" (how important it is to bots)
+        cover_component = cover_actor.get_component_by_class(unreal.CoverComponent)
+        cover_component.set_editor_properties({
+            "stance": stance,
+        })
+
+
+def delete_all_with_selected_mesh():
+    """ Debug delete all with same mesh as selected StaticMesh (with Undo support) """
+    selected_actors = unreal.EditorLevelLibrary.get_selected_level_actors()
+    if selected_actors:
+        with unreal.ScopedEditorTransaction("Deleted Same Meshes") as trans:
+            all_actors = get_all_actors(actor_class=unreal.StaticMeshActor)
+            meshes_of_actors_to_remove = list()
+            for actor in selected_actors:
+                if isinstance(actor, unreal.StaticMeshActor):
+                    smc = actor.get_component_by_class(unreal.StaticMeshComponent)
+                    mesh = smc.static_mesh
+                    if mesh not in meshes_of_actors_to_remove:
+                        meshes_of_actors_to_remove.append(smc.static_mesh)
+            for actor in all_actors:
+                smc = actor.get_component_by_class(unreal.StaticMeshComponent)
+                mesh = smc.static_mesh
+                if mesh in meshes_of_actors_to_remove:
+                    actor.modify()
+                    unreal.EditorLevelLibrary.destroy_actor(actor)
+
+
+def remove_collision_from_all_with_mesh_prefix(mesh_name_prefix):
+    """ Debug delete all with same mesh as selected StaticMesh (with Undo support) """
+    with unreal.ScopedEditorTransaction("Removed Collision on Matching Meshes") as trans:
+        for actor in get_all_actors(actor_class=unreal.StaticMeshActor):
+            smc = actor.get_component_by_class(unreal.StaticMeshComponent)
+            static_mesh = smc.static_mesh
+            if not static_mesh.get_name().startswith(mesh_name_prefix):
+                continue
+
+            # Enable Complex as Simple for this physics object
+            collision_complexity = unreal.EditorStaticMeshLibrary.get_collision_complexity(static_mesh)
+            if collision_complexity != unreal.CollisionTraceFlag.CTF_USE_DEFAULT:
+                print("[*] SM '%s' wasn't using Default collision complexity -- fixing" % static_mesh.get_name())
+                static_mesh.modify()
+                body_setup = static_mesh.get_editor_property("body_setup")
+                body_setup.set_editor_property("collision_trace_flag",
+                                               unreal.CollisionTraceFlag.CTF_USE_DEFAULT)
+                static_mesh.set_editor_property("body_setup", body_setup)
+
+
+def descale_and_position_non_skybox_actors():
+    selected_actors = unreal.EditorLevelLibrary.get_selected_level_actors()
+    if selected_actors:
+        with unreal.ScopedEditorTransaction("Deleted Same Meshes") as trans:
+            for actor in selected_actors:
+                actor_location = actor.get_actor_location()
+                # Move this actor to it's original world origin - it's position
+                actor_location = actor_location / unreal.Vector(-16, -16, -16)
+                actor.set_actor_location(actor_location, sweep=False, teleport=True)
+                actor.set_actor_scale3d(unreal.Vector(1, 1, 1))
+
+
+def move_gamelogic_actors_to_level():
+    gamelogic_actors = list()
+    gamelogic_actor_types = [
+        unreal.INSPlayerStart,
+        unreal.INSSpawnZone,
+        unreal.INSDestructibleObjective,
+        unreal.INSCaptureObjective,
+        unreal.INSObjective,
+        unreal.INSPatrolArea,
+        unreal.INSRestrictedArea,
+        unreal.INSVehicle,
+        unreal.INSVehicleSpawner,
+        unreal.CaptureZone,
+        unreal.ObjectiveCapturable,
+        unreal.ObjectiveDestructible,
+        unreal.SpawnZone,
+        unreal.SpawnerBase,
+        unreal.SpawnerSquad,
+        unreal.SpawnerVehicle,
+        unreal.SpawnZoneCounterAttack,
+        "Obj_WeaponCache",
+        "BP_Supply"
+    ]
+    for actor in get_all_actors():
+        if not actor:
+            continue
+        for gamelogic_actor_type in gamelogic_actor_types:
+            if isinstance(gamelogic_actor_type, str):
+                if gamelogic_actor_type in str(actor.get_class()):
+                    print(" - adding: %s" % actor.get_actor_label())
+                    gamelogic_actors.append(actor)
+                    actor.modify()
+            else:
+                if isinstance(actor, gamelogic_actor_type):
+                    print(" - adding: %s" % actor.get_actor_label())
+                    gamelogic_actors.append(actor)
+    unreal.EditorLevelLibrary.set_selected_level_actors(gamelogic_actors)
+
+
+def hide_mannequins():
+
+    # Hide all actors with a material name starting with "player_flesh_mat"
+    # and return a list of all matching actors
+    matching_actors = hide_all_actors_with_material_name("_flesh_")
+
+    # Add all actors in the "actors_to_group" list to an Unreal group
+    with unreal.ScopedEditorTransaction("Group Mannequins"):
+
+        useless_actors_group = unreal.ActorGroupingUtils(name="Mannequins")
+        useless_actors_group.group_actors(matching_actors)
+
+        # Move actors to a folder called "Mannequins"
+        move_actors_to_folder(matching_actors, "Mannequins")
+
+
 def fix_materials(content_root=None):
     """ Get a list of all assets that are material instances. """
 
@@ -1897,7 +2111,7 @@ def fix_materials(content_root=None):
 
                 asset_data = unreal.EditorAssetLibrary.find_asset_data(asset_path)
                 material_asset = asset_data.get_asset()
-                material_asset.modify(True)
+                # material_asset.modify(True)
 
                 # Retrieve NWI's T_UI_Empty texture (just a texture with full alpha)
                 empty_texture = unreal.EditorAssetLibrary.find_asset_data("/Game/UI/Textures/T_UI_Empty")
@@ -2241,8 +2455,7 @@ def fix_everything(world, map_info, map_data, skybox_bounds=6000):
             if actor_label.startswith("entity_unknown") \
                     or actor_contains_material_starting_with(actor, "M_missingProp"):
 
-                if actor_contains_material_starting_with(actor, "M_missingProp") \
-                    or actor_contains_material_containing(actor, "_flesh_"):
+                if actor_contains_material_starting_with(actor, "M_missingProp"):
 
                     # Disable collision on this tool object!
                     actor.set_actor_enable_collision(False)
@@ -2256,6 +2469,9 @@ def fix_everything(world, map_info, map_data, skybox_bounds=6000):
 
             elif (actor_contains_material_starting_with(actor, "tools")
                 or actor_contains_material_starting_with(actor, "fogvolume")):
+
+                if actor_contains_material_starting_with(actor, "toolsblack"):
+                    continue
 
                 # Disable collision on this tool object if it's not a clipping/blocking object
                 smc = actor.get_component_by_class(unreal.StaticMeshComponent)
@@ -2393,24 +2609,14 @@ def fix_everything(world, map_info, map_data, skybox_bounds=6000):
     # unreal.EditorLevelLibrary.save_all_dirty_levels()
 
     # Fix lights! They should all be multiplied by ~8 once
-    #with unreal.ScopedEditorTransaction("Fix Lights"):
-    #    fix_all_lighting()
+    with unreal.ScopedEditorTransaction("Fix Lights"):
+        fix_all_lighting()
 
     # Fix collisions!
     fix_collisions()
 
-    # Hide all actors with a material name starting with "player_flesh_mat"
-    # and return a list of all matching actors
-    matching_actors = hide_all_actors_with_material_name("player_flesh_mat")
-
-    # Add all actors in the "actors_to_group" list to an Unreal group
-    with unreal.ScopedEditorTransaction("Group Mannequins"):
-
-        useless_actors_group = unreal.ActorGroupingUtils(name="Mannequins")
-        useless_actors_group.group_actors(matching_actors)
-
-        # Move actors to a folder called "Mannequins"
-        move_actors_to_folder(matching_actors, "Mannequins")
+    # Hide mannequins
+    hide_mannequins()
 
     # Fix decals!
     print("[*] Attempting to fix all decals ...")
@@ -2435,163 +2641,25 @@ def fix_everything(world, map_info, map_data, skybox_bounds=6000):
     #    message_type=unreal.AppMsgType.OK)
 
 
-def give_debug_info():
-    world = unreal.EditorLevelLibrary.get_editor_world()
-    world_name = world.get_name()
-    map_info = get_json_values_for_current_map(world)
-    generate_entity_spreadsheets(open_directory=False)
-    get_vmf_data_for_current_map(world_name,
-      debug_output_path=r"%s.vmf.json" % world_name)
-    json.dump(map_info, open("%s.txt.json" % world_name, "w"), indent=4)
-    os.system("explorer %s.txt.json" % world_name)
-
-
-def debug_selected_cover_actor():
-
-    # Get the current world
-    world_context_object = unreal.EditorLevelLibrary.get_editor_world()
-
-    cover_actor = unreal.EditorLevelLibrary.get_selected_level_actors()[0]
-    if isinstance(cover_actor, unreal.Note):
-
-        convert_note_to_nbot_cover({"actor": cover_actor, "note": get_note_actor_details(cover_actor)},
-                                   fire_from_feet=False)
-
-    else:
-
-        # Make sure our new AICoverActor isn't overlapping with any objects
-        # by moving it out of the way of objects it overlaps with!
-        for dir in ["forward", "right", "left", "diags"]:
-            raycast_reposition_on_hit(cover_actor, world_context_object, direction=dir)
-
-        # Reposition to the ground, changing our stance if the ground
-        # is *very* close to the position we were spawned in
-        stance = unreal.SoldierStance.STAND
-        hit_something_below, distance = raycast_reposition_on_hit(cover_actor, world_context_object, "down")
-        if hit_something_below:
-            if distance < 220:
-                stance = unreal.SoldierStance.CROUCH
-            elif distance < 160:
-                stance = unreal.SoldierStance.PRONE
-
-        # If our AICoverActor is overlapping with something above it, make it crouch!
-        hit_something_above, distance = raycast_reposition_on_hit(cover_actor, world_context_object, "up")
-        if hit_something_above:
-            print("dist to hit above: %d" % distance)
-            if distance < 270:
-                stance = unreal.SoldierStance.CROUCH
-            elif distance < 180:
-                stance = unreal.SoldierStance.PRONE
-
-        # new_actor is an AICoverActor, which has
-        # a "Cover" component. The "Cover" component
-        # can define the stance, protection angle, launcher priority (good rocket launcher position?),
-        # scope priority (is this a good sniper position?), machine gunner priority,
-        # "ambush node" (good ambush position?), and "rank" (how important it is to bots)
-        cover_component = cover_actor.get_component_by_class(unreal.CoverComponent)
-        cover_component.set_editor_properties({
-            "stance": stance,
-        })
-
-
-def delete_all_with_selected_mesh():
-    """ Debug delete all with same mesh as selected StaticMesh (with Undo support) """
-    selected_actors = unreal.EditorLevelLibrary.get_selected_level_actors()
-    if selected_actors:
-        with unreal.ScopedEditorTransaction("Deleted Same Meshes") as trans:
-            all_actors = get_all_actors(actor_class=unreal.StaticMeshActor)
-            meshes_of_actors_to_remove = list()
-            for actor in selected_actors:
-                if isinstance(actor, unreal.StaticMeshActor):
-                    smc = actor.get_component_by_class(unreal.StaticMeshComponent)
-                    mesh = smc.static_mesh
-                    if mesh not in meshes_of_actors_to_remove:
-                        meshes_of_actors_to_remove.append(smc.static_mesh)
-            for actor in all_actors:
-                smc = actor.get_component_by_class(unreal.StaticMeshComponent)
-                mesh = smc.static_mesh
-                if mesh in meshes_of_actors_to_remove:
-                    actor.modify()
-                    unreal.EditorLevelLibrary.destroy_actor(actor)
-
-
-def remove_collision_from_all_with_mesh_prefix(mesh_name_prefix):
-    """ Debug delete all with same mesh as selected StaticMesh (with Undo support) """
-    with unreal.ScopedEditorTransaction("Removed Collision on Matching Meshes") as trans:
-        for actor in get_all_actors(actor_class=unreal.StaticMeshActor):
-            smc = actor.get_component_by_class(unreal.StaticMeshComponent)
-            static_mesh = smc.static_mesh
-            if not static_mesh.get_name().startswith(mesh_name_prefix):
-                continue
-
-            # Enable Complex as Simple for this physics object
-            collision_complexity = unreal.EditorStaticMeshLibrary.get_collision_complexity(static_mesh)
-            if collision_complexity != unreal.CollisionTraceFlag.CTF_USE_DEFAULT:
-                print("[*] SM '%s' wasn't using Default collision complexity -- fixing" % static_mesh.get_name())
-                static_mesh.modify()
-                body_setup = static_mesh.get_editor_property("body_setup")
-                body_setup.set_editor_property("collision_trace_flag",
-                                               unreal.CollisionTraceFlag.CTF_USE_DEFAULT)
-                static_mesh.set_editor_property("body_setup", body_setup)
-
-
-def descale_and_position_non_skybox_actors():
-    selected_actors = unreal.EditorLevelLibrary.get_selected_level_actors()
-    if selected_actors:
-        with unreal.ScopedEditorTransaction("Deleted Same Meshes") as trans:
-            for actor in selected_actors:
-                actor_location = actor.get_actor_location()
-                # Move this actor to it's original world origin - it's position
-                actor_location = actor_location / unreal.Vector(-16, -16, -16)
-                actor.set_actor_location(actor_location, sweep=False, teleport=True)
-                actor.set_actor_scale3d(unreal.Vector(1, 1, 1))
-
-
-def move_gamelogic_actors_to_level():
-    gamelogic_actors = list()
-    gamelogic_actor_types = [
-        unreal.INSPlayerStart,
-        unreal.INSSpawnZone,
-        unreal.INSDestructibleObjective,
-        unreal.INSCaptureObjective,
-        unreal.INSObjective,
-        unreal.INSPatrolArea,
-        unreal.INSRestrictedArea,
-        unreal.INSVehicle,
-        unreal.INSVehicleSpawner,
-        unreal.CaptureZone,
-        unreal.ObjectiveCapturable,
-        unreal.ObjectiveDestructible,
-        unreal.SpawnZone,
-        unreal.SpawnerBase,
-        unreal.SpawnerSquad,
-        unreal.SpawnerVehicle,
-        unreal.SpawnZoneCounterAttack,
-        "Obj_WeaponCache",
-        "BP_Supply"
-    ]
-    for actor in get_all_actors():
-        if not actor:
-            continue
-        for gamelogic_actor_type in gamelogic_actor_types:
-            if isinstance(gamelogic_actor_type, str):
-                if gamelogic_actor_type in str(actor.get_class()):
-                    print(" - adding: %s" % actor.get_actor_label())
-                    gamelogic_actors.append(actor)
-                    actor.modify()
-            else:
-                if isinstance(actor, gamelogic_actor_type):
-                    print(" - adding: %s" % actor.get_actor_label())
-                    gamelogic_actors.append(actor)
-    unreal.EditorLevelLibrary.set_selected_level_actors(gamelogic_actors)
-
-
 def main():
 
+    # Bastogne: 15000
+    # Breville: 15000
+    # Brittany: 8000
+    # Brittany: 3500
+    # Comacchio: 15000
+    # Crete: 15000
+    # DogRed: 15000
+    
     per_map_skybox_bounds = 15000
+    #hide_mannequins()
+    #return
+    #actors = get_all_actors()
+    #skybox_actors = fix_skybox(actors, skybox_bounds=per_map_skybox_bounds)
+    #return
 
     # DEBUGGING:
-    give_debug_info()
+    #give_debug_info()
     #generate_entity_spreadsheets(open_directory=True)
     #return
     #descale_and_position_non_skybox_actors()
