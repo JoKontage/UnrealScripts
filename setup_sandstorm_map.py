@@ -2643,6 +2643,7 @@ def fix_everything(world, map_info, map_data, skybox_bounds=6000):
 
 def main():
 
+    # PER MAP SKYBOX BOUND VALUES:
     # Bastogne: 15000
     # Breville: 15000
     # Brittany: 8000
@@ -2650,13 +2651,18 @@ def main():
     # Comacchio: 15000
     # Crete: 15000
     # DogRed: 15000
+    # Dunkirk: 10000
+    # Flakturm: 8000
+    # Foy: 14000
+    # Ortona: 10000
+    # Reichswald: 13000
+    # Rhineland: 9500
+    # SaintLo: 9500
+    # Salerno: 12000
+    # ShootingRange: 0 (no skybox; skip step)
+    # Sicily: 20000
     
-    per_map_skybox_bounds = 15000
-    #hide_mannequins()
-    #return
-    #actors = get_all_actors()
-    #skybox_actors = fix_skybox(actors, skybox_bounds=per_map_skybox_bounds)
-    #return
+    per_map_skybox_bounds = 20000
 
     # DEBUGGING:
     #give_debug_info()
@@ -2708,15 +2714,6 @@ def main():
 
     # Attempt to fix everything (and create scenarios, spawn objects, blah blah blah)
     fix_everything(world, map_info, map_data, skybox_bounds=per_map_skybox_bounds)
-
-    '''
-    for actor in get_all_actors(actor_class=unreal.Note):
-        if actor and actor.get_actor_label() == "nbot_cover_4707768":
-    
-            # Attempt to determine what type of note this
-            # is and add it to the proper level
-            parsed_note_actor(actor, {"AI": {"actors": []}})
-    '''
 
     print("[*] We're done! Almost everything should be fixed")
 
