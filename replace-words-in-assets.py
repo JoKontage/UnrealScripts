@@ -29,17 +29,17 @@ def main():
     script_title = sys.argv.pop(0)
 
     # If no arguments were provided, exit
-    if len(sys.argv) < 3:
+    if len(sys.argv) < 2:
         print("-------------------------------")
         print("[!] Missing arguments!")
-        print("Usage: {} <path/to/directory/to/search> <word_to_replace> <replacement_word>".format(script_title))
+        print("Usage: {} <path/to/directory/to/search> <word_to_replace> [replacement_word".format(script_title))
         print(HELP_TEXT)
         print("-------------------------------")
         return
 
     # Create a new variable called "directory_path"
     # using the first argument passed in
-    directory_path = sys.argv[0]
+    directory_path = sys.argv[0].replace("/Content", "")
     word_to_replace = sys.argv[1]
 
     # If we specified a replacement word,
@@ -49,9 +49,6 @@ def main():
         replacement_word = sys.argv[2]
     else:
         replacement_word = ""
-
-    # We'll store assets to rename here
-    asset_rename_datas = list()
 
     # Perform the below operations in a ScopedTransaction, which
     # allows us to undo changes afterwards
